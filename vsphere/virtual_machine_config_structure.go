@@ -380,7 +380,7 @@ func expandVirtualMachineFlagInfo(d *schema.ResourceData, client *govmomi.Client
 		EnableLogging:    getBoolWithRestart(d, "enable_logging"),
 	}
 	version := viapi.ParseVersionFromClient(client)
-	if version.Newer(viapi.VSphereVersion{Product: version.Product, Major: 6, Minor: 5}) {
+	if version.Newer(viapi.VSphereVersion{Product: version.Product, Major: 6, Minor: 6}) {
 		obj.VbsEnabled = getBoolWithRestart(d, "vbs_enabled")
 		obj.VvtdEnabled = getBoolWithRestart(d, "vvtd_enabled")
 	}
@@ -396,7 +396,7 @@ func flattenVirtualMachineFlagInfo(d *schema.ResourceData, obj *types.VirtualMac
 	_ = d.Set("enable_logging", obj.EnableLogging)
 
 	version := viapi.ParseVersionFromClient(client)
-	if version.Newer(viapi.VSphereVersion{Product: version.Product, Major: 6, Minor: 5}) {
+	if version.Newer(viapi.VSphereVersion{Product: version.Product, Major: 6, Minor: 6}) {
 		_ = d.Set("vbs_enabled", obj.VbsEnabled)
 		_ = d.Set("vvtd_enabled", obj.VvtdEnabled)
 	}
