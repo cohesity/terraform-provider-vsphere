@@ -391,16 +391,14 @@ func expandVirtualMachineFlagInfo(d *schema.ResourceData, client *govmomi.Client
 // VirtualMachineFlagInfo into the passed in ResourceData.
 func flattenVirtualMachineFlagInfo(d *schema.ResourceData, obj *types.VirtualMachineFlagInfo, client *govmomi.Client) error {
 	_ = d.Set("enable_disk_uuid", obj.DiskUuidEnabled)
-	_ = d.Set("vbs_enabled", obj.VbsEnabled)
-	_ = d.Set("vvtd_enabled", obj.VvtdEnabled)
 	_ = d.Set("hv_mode", obj.VirtualExecUsage)
 	_ = d.Set("ept_rvi_mode", obj.VirtualMmuUsage)
 	_ = d.Set("enable_logging", obj.EnableLogging)
 
 	version := viapi.ParseVersionFromClient(client)
 	if version.Newer(viapi.VSphereVersion{Product: version.Product, Major: 6, Minor: 5}) {
-		obj.VbsEnabled = getBoolWithRestart(d, "vbs_enabled")
-		obj.VvtdEnabled = getBoolWithRestart(d, "vvtd_enabled")
+		_ = d.Set("vbs_enabled", obj.VbsEnabled)
+		_ = d.Set("vvtd_enabled", obj.VvtdEnabled)
 	}
 	return nil
 }
