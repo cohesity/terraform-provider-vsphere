@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -228,22 +229,28 @@ func (v VSphereVersion) newerVersion(other VSphereVersion) bool {
 // the version and build numbers, are newer than the supplied version's
 // information.
 func (v VSphereVersion) Newer(other VSphereVersion) bool {
+	log.Printf("[DEBUG] VERSIONDEBUG: v: %#v vs other: %#v", v, other)
 	if !v.ProductEqual(other) {
+		log.Printf("[DEBUG] VERSIONDEBUG: Products are not equal, returning false")
 		return false
 	}
 	if v.newerVersion(other) {
+		log.Printf("[DEBUG] VERSIONDEBUG: v is newer than other, returning true")
 		return true
 	}
 
 	// Double check this version is not actually older by version number before
 	// moving on to the build number
 	if v.olderVersion(other) {
+		log.Printf("[DEBUG] VERSIONDEBUG: v is older than other, returning false")
 		return false
 	}
 
 	if v.Build > other.Build {
+		log.Printf("[DEBUG] VERSIONDEBUG: v build number is greater than other build number")
 		return true
 	}
+	log.Printf("[DEBUG] VERSIONDEBUG: catch all, returning false")
 	return false
 }
 
