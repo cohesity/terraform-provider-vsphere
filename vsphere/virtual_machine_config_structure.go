@@ -276,6 +276,22 @@ func schemaVirtualMachineConfigSpec() map[string]*schema.Schema {
 			Computed:    true,
 			Description: "The UUID of the virtual machine. Also exposed as the ID of the resource.",
 		},
+		"compatibility_version": {
+			Type:        schema.TypeString,
+			Optional:    true,
+			Default:     "vmx-14",
+			Description: "The hardware compatibility version of the VM.",
+		},
+		"instance_uuid": {
+			Type:        schema.TypeString,
+			Computed:    true,
+			Description: "The instance UUID of the virtual machine. Uniquily identifies a virtual machine.",
+		},
+		"error_message": {
+			Type:        schema.TypeString,
+			Computed:    true,
+			Description: "Error while creating/updating this resource.",
+		},
 	}
 	structure.MergeSchema(s, schemaVirtualMachineResourceAllocation())
 	return s
@@ -784,6 +800,7 @@ func expandVirtualMachineConfigSpec(d *schema.ResourceData, client *govmomi.Clie
 		NestedHVEnabled:              getBoolWithRestart(d, "nested_hv_enabled"),
 		VPMCEnabled:                  getBoolWithRestart(d, "cpu_performance_counters_enabled"),
 		LatencySensitivity:           expandLatencySensitivity(d),
+		Version:                      getWithRestart(d, "compatibility_version").(string),
 	}
 
 	return obj, nil
@@ -810,6 +827,8 @@ func flattenVirtualMachineConfigInfo(d *schema.ResourceData, obj *types.VirtualM
 	d.Set("cpu_performance_counters_enabled", obj.VPMCEnabled)
 	d.Set("change_version", obj.ChangeVersion)
 	d.Set("uuid", obj.Uuid)
+	d.Set("compatibility_version", obj.Version)
+	d.Set("instance_uuid", obj.InstanceUuid)
 
 	if err := flattenToolsConfigInfo(d, obj.Tools); err != nil {
 		return err

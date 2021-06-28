@@ -3,6 +3,7 @@ package vmworkflow
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 
@@ -13,16 +14,20 @@ import (
 )
 
 const (
-	cKeyPrefix        = "clone.0.customize.0"
-	cLinuxKeyPrefix   = "clone.0.customize.0.linux_options.0"
-	cWindowsKeyPrefix = "clone.0.customize.0.windows_options.0"
-	cNetifKeyPrefix   = "clone.0.customize.0.network_interface"
+	//cKeyPrefix        = "clone.0.customize.0"
+	//cLinuxKeyPrefix   = "clone.0.customize.0.linux_options.0"
+	//cWindowsKeyPrefix = "clone.0.customize.0.windows_options.0"
+	//cNetifKeyPrefix   = "clone.0.customize.0.network_interface"
+	cKeyPrefix        = "customize.0"
+	cLinuxKeyPrefix   = "customize.0.linux_options.0"
+	cWindowsKeyPrefix = "customize.0.windows_options.0"
+	cNetifKeyPrefix   = "customize.0.network_interface"
 )
 
 // netifKey renders a specific network_interface key for a specific resource
 // index.
-func netifKey(key string, n int) string {
-	return fmt.Sprintf("%s.%d.%s", cNetifKeyPrefix, n, key)
+func netifKey(key string, n int, prefix string) string {
+	return fmt.Sprintf("%s%s.%d.%s", prefix, cNetifKeyPrefix, n, key)
 }
 
 // matchGateway take an IP, mask, and gateway, and checks to see if the gateway
@@ -100,6 +105,63 @@ func VirtualMachineCustomizeSchema() map[string]*schema.Schema {
 						regexp.MustCompile("^[-+/_a-zA-Z0-9]+$"),
 						"must be similar to America/Los_Angeles or other Linux/Unix TZ format",
 					),
+				},
+			}},
+		},
+
+		// This is the spec of resource_vsphere_file.To customize a windows machine we
+		// copy the cabinet file inside the VM. This file should be present inside the
+		// vm folder. So when the vm is created we check if there are any customization
+		// for the VM. We do not use the windows_options as it syspreps the machine and
+		// changes the identity of the machine. TODO(Mradul): Take only the source path
+		// and compute the other options from the VM resource definition.
+		//
+		// Note: This schema is similar to schema in resource_vsphere_file.go.
+		// source_file.ForceNew has been set to false, otherwise the existing
+		// resource is replaced with a new one.
+		"cohesity_windows_customization_options": {
+			Type:          schema.TypeList,
+			Optional:      true,
+			MaxItems:      1,
+			ConflictsWith: []string{cKeyPrefix + "." + "windows_options", cKeyPrefix + "." + "windows_sysprep_text", cKeyPrefix + "." + "linux_options"},
+			Description:   "Customization of windows vm in cohesity",
+			Elem: &schema.Resource{Schema: map[string]*schema.Schema{
+				"datacenter": {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+
+				"source_datacenter": {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+				},
+
+				"datastore": {
+					Type:     schema.TypeString,
+					Required: true,
+				},
+
+				"source_datastore": {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+				},
+
+				"source_file": {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: false,
+				},
+
+				"destination_file": {
+					Type:     schema.TypeString,
+					Required: true,
+				},
+
+				"create_directories": {
+					Type:     schema.TypeBool,
+					Optional: true,
 				},
 			}},
 		},
@@ -201,6 +263,7 @@ func VirtualMachineCustomizeSchema() map[string]*schema.Schema {
 		"windows_sysprep_text": {
 			Type:          schema.TypeString,
 			Optional:      true,
+			Sensitive:     true,
 			ConflictsWith: []string{cKeyPrefix + "." + "linux_options", cKeyPrefix + "." + "windows_options"},
 			Description:   "Use this option to specify a windows sysprep file directly.",
 		},
@@ -267,33 +330,33 @@ func VirtualMachineCustomizeSchema() map[string]*schema.Schema {
 
 // expandCustomizationGlobalIPSettings reads certain ResourceData keys and
 // returns a CustomizationGlobalIPSettings.
-func expandCustomizationGlobalIPSettings(d *schema.ResourceData) types.CustomizationGlobalIPSettings {
+func expandCustomizationGlobalIPSettings(d *schema.ResourceData, prefix string) types.CustomizationGlobalIPSettings {
 	obj := types.CustomizationGlobalIPSettings{
-		DnsSuffixList: structure.SliceInterfacesToStrings(d.Get(cKeyPrefix + "." + "dns_suffix_list").([]interface{})),
-		DnsServerList: structure.SliceInterfacesToStrings(d.Get(cKeyPrefix + "." + "dns_server_list").([]interface{})),
+		DnsSuffixList: structure.SliceInterfacesToStrings(d.Get(prefix + cKeyPrefix + "." + "dns_suffix_list").([]interface{})),
+		DnsServerList: structure.SliceInterfacesToStrings(d.Get(prefix + cKeyPrefix + "." + "dns_server_list").([]interface{})),
 	}
 	return obj
 }
 
 // expandCustomizationLinuxPrep reads certain ResourceData keys and
 // returns a CustomizationLinuxPrep.
-func expandCustomizationLinuxPrep(d *schema.ResourceData) *types.CustomizationLinuxPrep {
+func expandCustomizationLinuxPrep(d *schema.ResourceData, prefix string) *types.CustomizationLinuxPrep {
 	obj := &types.CustomizationLinuxPrep{
 		HostName: &types.CustomizationFixedName{
-			Name: d.Get(cLinuxKeyPrefix + "." + "host_name").(string),
+			Name: d.Get(prefix + cLinuxKeyPrefix + "." + "host_name").(string),
 		},
-		Domain:     d.Get(cLinuxKeyPrefix + "." + "domain").(string),
-		TimeZone:   d.Get(cLinuxKeyPrefix + "." + "time_zone").(string),
-		HwClockUTC: structure.GetBoolPtr(d, cLinuxKeyPrefix+"."+"hw_clock_utc"),
+		Domain:     d.Get(prefix + cLinuxKeyPrefix + "." + "domain").(string),
+		TimeZone:   d.Get(prefix + cLinuxKeyPrefix + "." + "time_zone").(string),
+		HwClockUTC: structure.GetBoolPtr(d, prefix+cLinuxKeyPrefix+"."+"hw_clock_utc"),
 	}
 	return obj
 }
 
 // expandCustomizationGuiRunOnce reads certain ResourceData keys and
 // returns a CustomizationGuiRunOnce.
-func expandCustomizationGuiRunOnce(d *schema.ResourceData) *types.CustomizationGuiRunOnce {
+func expandCustomizationGuiRunOnce(d *schema.ResourceData, prefix string) *types.CustomizationGuiRunOnce {
 	obj := &types.CustomizationGuiRunOnce{
-		CommandList: structure.SliceInterfacesToStrings(d.Get(cWindowsKeyPrefix + "." + "run_once_command_list").([]interface{})),
+		CommandList: structure.SliceInterfacesToStrings(d.Get(prefix + cWindowsKeyPrefix + "." + "run_once_command_list").([]interface{})),
 	}
 	if len(obj.CommandList) < 1 {
 		return nil
@@ -303,13 +366,13 @@ func expandCustomizationGuiRunOnce(d *schema.ResourceData) *types.CustomizationG
 
 // expandCustomizationGuiUnattended reads certain ResourceData keys and
 // returns a CustomizationGuiUnattended.
-func expandCustomizationGuiUnattended(d *schema.ResourceData) types.CustomizationGuiUnattended {
+func expandCustomizationGuiUnattended(d *schema.ResourceData, prefix string) types.CustomizationGuiUnattended {
 	obj := types.CustomizationGuiUnattended{
-		TimeZone:       int32(d.Get(cWindowsKeyPrefix + "." + "time_zone").(int)),
-		AutoLogon:      d.Get(cWindowsKeyPrefix + "." + "auto_logon").(bool),
-		AutoLogonCount: int32(d.Get(cWindowsKeyPrefix + "." + "auto_logon_count").(int)),
+		TimeZone:       int32(d.Get(prefix + cWindowsKeyPrefix + "." + "time_zone").(int)),
+		AutoLogon:      d.Get(prefix + cWindowsKeyPrefix + "." + "auto_logon").(bool),
+		AutoLogonCount: int32(d.Get(prefix + cWindowsKeyPrefix + "." + "auto_logon_count").(int)),
 	}
-	if v, ok := d.GetOk(cWindowsKeyPrefix + "." + "admin_password"); ok {
+	if v, ok := d.GetOk(prefix + cWindowsKeyPrefix + "." + "admin_password"); ok {
 		obj.Password = &types.CustomizationPassword{
 			Value:     v.(string),
 			PlainText: true,
@@ -321,11 +384,11 @@ func expandCustomizationGuiUnattended(d *schema.ResourceData) types.Customizatio
 
 // expandCustomizationIdentification reads certain ResourceData keys and
 // returns a CustomizationIdentification.
-func expandCustomizationIdentification(d *schema.ResourceData) types.CustomizationIdentification {
+func expandCustomizationIdentification(d *schema.ResourceData, prefix string) types.CustomizationIdentification {
 	obj := types.CustomizationIdentification{
-		JoinWorkgroup: d.Get(cWindowsKeyPrefix + "." + "workgroup").(string),
-		JoinDomain:    d.Get(cWindowsKeyPrefix + "." + "join_domain").(string),
-		DomainAdmin:   d.Get(cWindowsKeyPrefix + "." + "domain_admin_user").(string),
+		JoinWorkgroup: d.Get(prefix + cWindowsKeyPrefix + "." + "workgroup").(string),
+		JoinDomain:    d.Get(prefix + cWindowsKeyPrefix + "." + "join_domain").(string),
+		DomainAdmin:   d.Get(prefix + cWindowsKeyPrefix + "." + "domain_admin_user").(string),
 	}
 	if v, ok := d.GetOk(cWindowsKeyPrefix + "." + "domain_admin_password"); ok {
 		obj.DomainAdminPassword = &types.CustomizationPassword{
@@ -338,35 +401,35 @@ func expandCustomizationIdentification(d *schema.ResourceData) types.Customizati
 
 // expandCustomizationUserData reads certain ResourceData keys and
 // returns a CustomizationUserData.
-func expandCustomizationUserData(d *schema.ResourceData) types.CustomizationUserData {
+func expandCustomizationUserData(d *schema.ResourceData, prefix string) types.CustomizationUserData {
 	obj := types.CustomizationUserData{
-		FullName: d.Get(cWindowsKeyPrefix + "." + "full_name").(string),
-		OrgName:  d.Get(cWindowsKeyPrefix + "." + "organization_name").(string),
+		FullName: d.Get(prefix + cWindowsKeyPrefix + "." + "full_name").(string),
+		OrgName:  d.Get(prefix + cWindowsKeyPrefix + "." + "organization_name").(string),
 		ComputerName: &types.CustomizationFixedName{
-			Name: d.Get(cWindowsKeyPrefix + "." + "computer_name").(string),
+			Name: d.Get(prefix + cWindowsKeyPrefix + "." + "computer_name").(string),
 		},
-		ProductId: d.Get(cWindowsKeyPrefix + "." + "product_key").(string),
+		ProductId: d.Get(prefix + cWindowsKeyPrefix + "." + "product_key").(string),
 	}
 	return obj
 }
 
 // expandCustomizationSysprep reads certain ResourceData keys and
 // returns a CustomizationSysprep.
-func expandCustomizationSysprep(d *schema.ResourceData) *types.CustomizationSysprep {
+func expandCustomizationSysprep(d *schema.ResourceData, prefix string) *types.CustomizationSysprep {
 	obj := &types.CustomizationSysprep{
-		GuiUnattended:  expandCustomizationGuiUnattended(d),
-		UserData:       expandCustomizationUserData(d),
-		GuiRunOnce:     expandCustomizationGuiRunOnce(d),
-		Identification: expandCustomizationIdentification(d),
+		GuiUnattended:  expandCustomizationGuiUnattended(d, prefix),
+		UserData:       expandCustomizationUserData(d, prefix),
+		GuiRunOnce:     expandCustomizationGuiRunOnce(d, prefix),
+		Identification: expandCustomizationIdentification(d, prefix),
 	}
 	return obj
 }
 
 // expandCustomizationSysprepText reads certain ResourceData keys and
 // returns a CustomizationSysprepText.
-func expandCustomizationSysprepText(d *schema.ResourceData) *types.CustomizationSysprepText {
+func expandCustomizationSysprepText(d *schema.ResourceData, prefix string) *types.CustomizationSysprepText {
 	obj := &types.CustomizationSysprepText{
-		Value: d.Get(cKeyPrefix + "." + "windows_sysprep_text").(string),
+		Value: d.Get(prefix + cKeyPrefix + "." + "windows_sysprep_text").(string),
 	}
 	return obj
 }
@@ -377,17 +440,17 @@ func expandCustomizationSysprepText(d *schema.ResourceData) *types.Customization
 // Only one of the three types of identity settings can be specified: Linux
 // settings (from linux_options), Windows settings (from windows_options), and
 // the raw Windows sysprep file (via windows_sysprep_text).
-func expandBaseCustomizationIdentitySettings(d *schema.ResourceData, family string) types.BaseCustomizationIdentitySettings {
+func expandBaseCustomizationIdentitySettings(d *schema.ResourceData, family, prefix string) types.BaseCustomizationIdentitySettings {
 	var obj types.BaseCustomizationIdentitySettings
-	_, windowsExists := d.GetOkExists(cKeyPrefix + "." + "windows_options")
-	_, sysprepExists := d.GetOkExists(cKeyPrefix + "." + "windows_sysprep_text")
+	_, windowsExists := d.GetOkExists(prefix + cKeyPrefix + "." + "windows_options")
+	_, sysprepExists := d.GetOkExists(prefix + cKeyPrefix + "." + "windows_sysprep_text")
 	switch {
 	case family == string(types.VirtualMachineGuestOsFamilyLinuxGuest):
-		obj = expandCustomizationLinuxPrep(d)
+		obj = expandCustomizationLinuxPrep(d, prefix)
 	case family == string(types.VirtualMachineGuestOsFamilyWindowsGuest) && windowsExists:
-		obj = expandCustomizationSysprep(d)
+		obj = expandCustomizationSysprep(d, prefix)
 	case family == string(types.VirtualMachineGuestOsFamilyWindowsGuest) && sysprepExists:
-		obj = expandCustomizationSysprepText(d)
+		obj = expandCustomizationSysprepText(d, prefix)
 	default:
 		obj = &types.CustomizationIdentitySettings{}
 	}
@@ -396,14 +459,14 @@ func expandBaseCustomizationIdentitySettings(d *schema.ResourceData, family stri
 
 // expandCustomizationIPSettingsIPV6AddressSpec reads certain ResourceData keys and
 // returns a CustomizationIPSettingsIpV6AddressSpec.
-func expandCustomizationIPSettingsIPV6AddressSpec(d *schema.ResourceData, n int, gwAdd bool) (*types.CustomizationIPSettingsIpV6AddressSpec, bool) {
-	v, ok := d.GetOk(netifKey("ipv6_address", n))
+func expandCustomizationIPSettingsIPV6AddressSpec(d *schema.ResourceData, n int, gwAdd bool, prefix string) (*types.CustomizationIPSettingsIpV6AddressSpec, bool) {
+	v, ok := d.GetOk(netifKey("ipv6_address", n, prefix))
 	var gwFound bool
 	if !ok {
 		return nil, gwFound
 	}
 	addr := v.(string)
-	mask := d.Get(netifKey("ipv6_netmask", n)).(int)
+	mask := d.Get(netifKey("ipv6_netmask", n, prefix)).(int)
 	gw, gwOk := d.Get(cKeyPrefix + "." + "ipv6_gateway").(string)
 	obj := &types.CustomizationIPSettingsIpV6AddressSpec{
 		Ip: []types.BaseCustomizationIpV6Generator{
@@ -422,10 +485,10 @@ func expandCustomizationIPSettingsIPV6AddressSpec(d *schema.ResourceData, n int,
 
 // expandCustomizationIPSettings reads certain ResourceData keys and
 // returns a CustomizationIPSettings.
-func expandCustomizationIPSettings(d *schema.ResourceData, n int, v4gwAdd, v6gwAdd bool) (types.CustomizationIPSettings, bool, bool) {
+func expandCustomizationIPSettings(d *schema.ResourceData, n int, v4gwAdd, v6gwAdd bool, prefix string) (types.CustomizationIPSettings, bool, bool) {
 	var v4gwFound, v6gwFound bool
-	v4addr, v4addrOk := d.GetOk(netifKey("ipv4_address", n))
-	v4mask := d.Get(netifKey("ipv4_netmask", n)).(int)
+	v4addr, v4addrOk := d.GetOk(netifKey("ipv4_address", n, prefix))
+	v4mask := d.Get(netifKey("ipv4_netmask", n, prefix)).(int)
 	v4gw, v4gwOk := d.Get(cKeyPrefix + "." + "ipv4_gateway").(string)
 	var obj types.CustomizationIPSettings
 	switch {
@@ -442,16 +505,33 @@ func expandCustomizationIPSettings(d *schema.ResourceData, n int, v4gwAdd, v6gwA
 	default:
 		obj.Ip = &types.CustomizationDhcpIpGenerator{}
 	}
-	obj.DnsServerList = structure.SliceInterfacesToStrings(d.Get(netifKey("dns_server_list", n)).([]interface{}))
-	obj.DnsDomain = d.Get(netifKey("dns_domain", n)).(string)
-	obj.IpV6Spec, v6gwFound = expandCustomizationIPSettingsIPV6AddressSpec(d, n, v6gwAdd)
+	obj.DnsServerList = structure.SliceInterfacesToStrings(d.Get(netifKey("dns_server_list", n, prefix)).([]interface{}))
+	obj.DnsDomain = d.Get(netifKey("dns_domain", n, prefix)).(string)
+	obj.IpV6Spec, v6gwFound = expandCustomizationIPSettingsIPV6AddressSpec(d, n, v6gwAdd, prefix)
 	return obj, v4gwFound, v6gwFound
+}
+
+// Returns the ipv4 address provided in the customize block.
+func GetCustomIPFromSpec(d *schema.ResourceData, prefix string) string {
+	log.Print("[DEBUG] fetching ip address.")
+	s := d.Get(prefix + cKeyPrefix + "." + "network_interface").([]interface{})
+	if len(s) < 1 {
+		return ""
+	}
+
+	v4addr, v4addrOk := d.GetOk(netifKey("ipv4_address", 0, prefix))
+	if v4addrOk {
+		log.Printf("[DEBUG] Found v4addrok: true. Returning address %s", v4addr.(string))
+		return v4addr.(string)
+	}
+
+	return ""
 }
 
 // expandSliceOfCustomizationAdapterMapping reads certain ResourceData keys and
 // returns a CustomizationAdapterMapping slice.
-func expandSliceOfCustomizationAdapterMapping(d *schema.ResourceData) []types.CustomizationAdapterMapping {
-	s := d.Get(cKeyPrefix + "." + "network_interface").([]interface{})
+func expandSliceOfCustomizationAdapterMapping(d *schema.ResourceData, prefix string) []types.CustomizationAdapterMapping {
+	s := d.Get(prefix + cKeyPrefix + "." + "network_interface").([]interface{})
 	if len(s) < 1 {
 		return nil
 	}
@@ -459,7 +539,7 @@ func expandSliceOfCustomizationAdapterMapping(d *schema.ResourceData) []types.Cu
 	var v4gwFound, v6gwFound bool
 	for i := range s {
 		var adapter types.CustomizationIPSettings
-		adapter, v4gwFound, v6gwFound = expandCustomizationIPSettings(d, i, !v4gwFound, !v6gwFound)
+		adapter, v4gwFound, v6gwFound = expandCustomizationIPSettings(d, i, !v4gwFound, !v6gwFound, prefix)
 		obj := types.CustomizationAdapterMapping{
 			Adapter: adapter,
 		}
@@ -470,11 +550,11 @@ func expandSliceOfCustomizationAdapterMapping(d *schema.ResourceData) []types.Cu
 
 // ExpandCustomizationSpec reads certain ResourceData keys and
 // returns a CustomizationSpec.
-func ExpandCustomizationSpec(d *schema.ResourceData, family string) types.CustomizationSpec {
+func ExpandCustomizationSpec(d *schema.ResourceData, family, prefix string) types.CustomizationSpec {
 	obj := types.CustomizationSpec{
-		Identity:         expandBaseCustomizationIdentitySettings(d, family),
-		GlobalIPSettings: expandCustomizationGlobalIPSettings(d),
-		NicSettingMap:    expandSliceOfCustomizationAdapterMapping(d),
+		Identity:         expandBaseCustomizationIdentitySettings(d, family, prefix),
+		GlobalIPSettings: expandCustomizationGlobalIPSettings(d, prefix),
+		NicSettingMap:    expandSliceOfCustomizationAdapterMapping(d, prefix),
 	}
 	return obj
 }

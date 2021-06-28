@@ -34,7 +34,7 @@ future releases. To transition existing disks, rename the "name" attribute to
 
 Note that "label" does not control the name of a VMDK and does not need to bear
 the name of one on new disks or virtual machines. For more information, see the
-documentation for the label attribute at: 
+documentation for the label attribute at:
 
 https://www.terraform.io/docs/providers/vsphere/r/virtual_machine.html#label
 `
@@ -176,10 +176,10 @@ func DiskSubresourceSchema() map[string]*schema.Schema {
 
 		// VirtualDisk
 		"size": {
-			Type:         schema.TypeInt,
+			Type:         schema.TypeFloat,
 			Optional:     true,
-			Description:  "The size of the disk, in GB.",
-			ValidateFunc: validation.IntAtLeast(1),
+			Description:  "The size of the disk, in KB.",
+			ValidateFunc: validation.FloatBetween(0, math.MaxFloat64),
 		},
 
 		// Complex terraform-local things
@@ -752,8 +752,8 @@ func DiskCloneValidateOperation(d *schema.ResourceDiff, c *govmomi.Client, l obj
 			return fmt.Errorf("%s: %s", tr.Addr(), err)
 		}
 		targetPath := r.Get("path").(string)
-		sourceSize := r.Get("size").(int)
-		targetSize := tr.Get("size").(int)
+		sourceSize := r.Get("size").(float64)
+		targetSize := tr.Get("size").(float64)
 		targetThin := tr.Get("thin_provisioned").(bool)
 		targetEager := tr.Get("eagerly_scrub").(bool)
 
@@ -769,7 +769,7 @@ func DiskCloneValidateOperation(d *schema.ResourceDiff, c *govmomi.Client, l obj
 		case linked:
 			switch {
 			case sourceSize != targetSize:
-				return fmt.Errorf("%s: disk name %s must be the exact size of source when using linked_clone (expected: %d GiB)", tr.Addr(), targetName, sourceSize)
+				return fmt.Errorf("%s: disk name %s must be the exact size of source when using linked_clone (expected: %f KiB)", tr.Addr(), targetName, sourceSize)
 			case sourceThin != targetThin:
 				return fmt.Errorf("%s: disk name %s must have same value for thin_provisioned as source when using linked_clone (expected: %t)", tr.Addr(), targetName, sourceThin)
 			case sourceEager != targetEager:
@@ -777,7 +777,7 @@ func DiskCloneValidateOperation(d *schema.ResourceDiff, c *govmomi.Client, l obj
 			}
 		default:
 			if sourceSize > targetSize {
-				return fmt.Errorf("%s: disk name %s must be at least the same size of source when cloning (expected: >= %d GiB)", tr.Addr(), targetName, sourceSize)
+				return fmt.Errorf("%s: disk name %s must be at least the same size of source when cloning (expected: >= %f KiB)", tr.Addr(), targetName, sourceSize)
 			}
 		}
 
@@ -1138,7 +1138,7 @@ func ReadDiskAttrsForDataSource(l object.VirtualDeviceList, count int) ([]map[st
 		if backing.ThinProvisioned != nil {
 			thin = *backing.ThinProvisioned
 		}
-		m["size"] = diskCapacityInGiB(disk)
+		m["size"] = diskCapacityInGiB(disk) * 1024 * 1024
 		m["eagerly_scrub"] = eager
 		m["thin_provisioned"] = thin
 		out = append(out, m)
@@ -1242,7 +1242,7 @@ func (r *DiskSubresource) Read(l object.VirtualDeviceList) error {
 			return fmt.Errorf("could not parse path from filename: %s", b.FileName)
 		}
 		r.Set("path", dp.Path)
-		r.Set("size", diskCapacityInGiB(disk))
+		r.Set("size", diskCapacityInGiB(disk)*1024*1024)
 	}
 
 	if allocation := disk.StorageIOAllocation; allocation != nil {
@@ -1397,8 +1397,8 @@ func (r *DiskSubresource) DiffExisting() error {
 	// we might want to change the name of this method, but we want to check this
 	// here as CustomizeDiff is meant for vetoing.
 	osize, nsize := r.GetChange("size")
-	if osize.(int) > nsize.(int) {
-		return fmt.Errorf("virtual disk %q: virtual disks cannot be shrunk (old: %d new: %d)", name, osize.(int), nsize.(int))
+	if osize.(float64) > nsize.(float64) {
+		return fmt.Errorf("virtual disk %q: virtual disks cannot be shrunk (old: %d new: %d)", name, osize.(float64), nsize.(float64))
 	}
 
 	// Ensure that there is no change in either eagerly_scrub or thin_provisioned
@@ -1409,17 +1409,7 @@ func (r *DiskSubresource) DiffExisting() error {
 	if _, err = r.GetWithVeto("thin_provisioned"); err != nil {
 		return fmt.Errorf("virtual disk %q: %s", name, err)
 	}
-	// Same with attach
-	if _, err = r.GetWithVeto("attach"); err != nil {
-		return fmt.Errorf("virtual disk %q: %s", name, err)
-	}
 
-	// Validate storage vMotion if the datastore is changing
-	if r.HasChange("datastore_id") {
-		if err = r.validateStorageRelocateDiff(); err != nil {
-			return err
-		}
-	}
 	log.Printf("[DEBUG] %s: Normalization of existing disk diff complete", r)
 	return nil
 }
@@ -1446,7 +1436,7 @@ func (r *DiskSubresource) DiffGeneral() error {
 		switch {
 		case r.Get("datastore_id").(string) == "":
 			return fmt.Errorf("datastore_id for disk %q is required when attach is set", name)
-		case r.Get("size").(int) > 0:
+		case r.Get("size").(float64) > 0:
 			return fmt.Errorf("size for disk %q cannot be defined when attach is set", name)
 		case r.Get("eagerly_scrub").(bool):
 			return fmt.Errorf("eagerly_scrub for disk %q cannot be defined when attach is set", name)
@@ -1455,7 +1445,7 @@ func (r *DiskSubresource) DiffGeneral() error {
 		}
 	} else {
 		// Enforce size as a required field when attach is not set
-		if r.Get("size").(int) < 1 {
+		if r.Get("size").(float64) < 1 {
 			return fmt.Errorf("size for disk %q: required option not set", name)
 		}
 	}
@@ -1522,44 +1512,6 @@ func (r *DiskSubresource) normalizeDiskDatastore() error {
 	}
 
 	r.Set("datastore_id", dsID)
-	return nil
-}
-
-// validateStorageRelocateDiff validates certain storage vMotion diffs to make
-// sure they are functional. These mainly have to do with limitations
-// associated with our tracking of virtual disks via their names.
-//
-// The current limitations are:
-//
-// * Externally-attached virtual disks are not allowed to be vMotioned.
-// * Disks must match the vSphere naming convention, where the first disk is
-// named VMNAME.vmdk, and all other disks are named VMNAME_INDEX.vmdk This is a
-// validation we use for cloning as well.
-// * Any VM that has been created by a linked clone is blocked from storage
-// vMotion full stop.
-//
-// TODO: Once we have solved the disk tracking issue and are no longer tracking
-// disks via their file names, the only restriction that should remain is for
-// externally attached disks. That restriction will go away once we figure out
-// a strategy for handling when said disks have been moved OOB of the VM
-// workflow.
-func (r *DiskSubresource) validateStorageRelocateDiff() error {
-	log.Printf("[DEBUG] %s: Validating storage vMotion eligibility", r)
-	if err := r.blockRelocateAttachedDisks(); err != nil {
-		return err
-	}
-	log.Printf("[DEBUG] %s: Storage vMotion validation successful", r)
-	return nil
-}
-
-func (r *DiskSubresource) blockRelocateAttachedDisks() error {
-	attach := r.Get("attach")
-	if attach == nil {
-		return nil
-	}
-	if attach.(bool) {
-		return fmt.Errorf("externally attached disk %q cannot be migrated", diskPathOrName(r.data))
-	}
 	return nil
 }
 
@@ -1652,10 +1604,12 @@ func (r *DiskSubresource) expandDiskSettings(disk *types.VirtualDisk) error {
 
 		// Disk settings
 		os, ns := r.GetChange("size")
-		if os.(int) > ns.(int) {
+		if os.(float64) > ns.(float64) {
 			return fmt.Errorf("virtual disks cannot be shrunk")
 		}
-		disk.CapacityInBytes = structure.GiBToByte(ns.(int))
+
+		// We now pass the size of the disk in KiB
+		disk.CapacityInBytes = int64(structure.KiBToByte(ns.(float64)))
 		disk.CapacityInKB = disk.CapacityInBytes / 1024
 	}
 
@@ -2014,13 +1968,13 @@ func diskUUIDMatch(device types.BaseVirtualDevice, uuid string) bool {
 // CapacityInBytes, and then falling back to CapacityInKB if that value is
 // unavailable. This helps correct some situations where the former value's
 // data gets cleared, which seems to happen on upgrades.
-func diskCapacityInGiB(disk *types.VirtualDisk) int {
+func diskCapacityInGiB(disk *types.VirtualDisk) int64 {
 	if disk.CapacityInBytes > 0 {
-		return int(structure.ByteToGiB(disk.CapacityInBytes).(int64))
+		return int64(structure.ByteToGiB(disk.CapacityInBytes).(int64))
 	}
 	log.Printf(
 		"[DEBUG] diskCapacityInGiB: capacityInBytes missing for for %s, falling back to capacityInKB",
 		object.VirtualDeviceList{}.Name(disk),
 	)
-	return int(structure.ByteToGiB(disk.CapacityInKB * 1024).(int64))
+	return int64(structure.ByteToGiB(disk.CapacityInKB * 1024).(int64))
 }

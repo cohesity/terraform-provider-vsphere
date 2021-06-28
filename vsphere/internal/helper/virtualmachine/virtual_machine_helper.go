@@ -210,7 +210,7 @@ func Properties(vm *object.VirtualMachine) (*mo.VirtualMachine, error) {
 //
 // The timeout is specified in minutes. If zero or a negative value is passed,
 // the waiter returns without error immediately.
-func WaitForGuestIP(client *govmomi.Client, vm *object.VirtualMachine, timeout int, ignoredGuestIPs []interface{}) error {
+func WaitForGuestIP(client *govmomi.Client, vm *object.VirtualMachine, timeout int, ignoredGuestIPs []interface{}, ipv4Addr string) error {
 	if timeout < 1 {
 		log.Printf("[DEBUG] Skipping IP waiter for VM %q", vm.InventoryPath)
 		return nil
@@ -221,6 +221,7 @@ func WaitForGuestIP(client *govmomi.Client, vm *object.VirtualMachine, timeout i
 		timeout,
 	)
 
+	log.Printf("[DEBUG] Expected ipv4 address [%s]", ipv4Addr)
 	p := client.PropertyCollector()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*time.Duration(timeout))
 	defer cancel()
@@ -233,6 +234,15 @@ func WaitForGuestIP(client *govmomi.Client, vm *object.VirtualMachine, timeout i
 
 			if c.Val == nil {
 				continue
+			}
+
+			log.Printf("[DEBUG] Received Ip address [%s]", c.Val.(string))
+			// Check only in case of static IP assignment
+			if ipv4Addr != "" {
+				if c.Val.(string) == ipv4Addr {
+					log.Printf("[DEBUG] Input ip: [%s], expected value: [%s]", c.Val.(string), ipv4Addr)
+					return true
+				}
 			}
 
 			ip := net.ParseIP(c.Val.(string))
@@ -265,7 +275,7 @@ func WaitForGuestIP(client *govmomi.Client, vm *object.VirtualMachine, timeout i
 //
 // The timeout is specified in minutes. If zero or a negative value is passed,
 // the waiter returns without error immediately.
-func WaitForGuestNet(client *govmomi.Client, vm *object.VirtualMachine, routable bool, timeout int, ignoredGuestIPs []interface{}) error {
+func WaitForGuestNet(client *govmomi.Client, vm *object.VirtualMachine, routable bool, timeout int, ignoredGuestIPs []interface{}, ipv4Addr string) error {
 	if timeout < 1 {
 		log.Printf("[DEBUG] Skipping network waiter for VM %q", vm.InventoryPath)
 		return nil
@@ -277,6 +287,64 @@ func WaitForGuestNet(client *govmomi.Client, vm *object.VirtualMachine, routable
 		timeout,
 	)
 	var v4gw, v6gw net.IP
+
+	log.Printf("[DEBUG] Expected ipv4 address [%s]", ipv4Addr)
+
+	if ipv4Addr != "" {
+		pp := client.PropertyCollector()
+		ctx, cancelpp := context.WithTimeout(context.Background(), time.Minute*time.Duration(timeout))
+		defer cancelpp()
+
+		err := property.Wait(ctx, pp, vm.Reference(), []string{"guest.net"}, func(pc []types.PropertyChange) bool {
+			for _, c := range pc {
+				if c.Op != types.PropertyChangeOpAssign {
+					continue
+				}
+
+				if c.Val == nil {
+					continue
+				}
+
+				var ip string = ""
+				switch v := c.Val.(type) {
+				case types.ArrayOfGuestNicInfo:
+					for _, n := range v.GuestNicInfo {
+						if n.IpConfig != nil {
+							for _, addr := range n.IpConfig.IpAddress {
+								ip = addr.IpAddress
+								parsedIP := net.ParseIP(addr.IpAddress)
+								if parsedIP.To4() == nil {
+									log.Printf("[DEBUG] Received IPv6. Skipping")
+									continue
+								} else {
+									break
+								}
+							}
+						}
+					}
+				}
+
+				log.Printf("[DEBUG] Received Ip address [%s]", ip)
+				if ip != "" {
+					log.Printf("[DEBUG] Input ip: [%s], expected value: [%s]", ip, ipv4Addr)
+					if ip == ipv4Addr {
+						return true
+					}
+				}
+			}
+
+			log.Printf("[DEBUG] Returning false")
+			return false
+		})
+
+		if err != nil {
+			// Provide a friendly error message if we timed out waiting for a routable IP.
+			if ctx.Err() == context.DeadlineExceeded {
+				return errors.New("Timeout waiting for an available IP address")
+			}
+			return err
+		}
+	}
 
 	p := client.PropertyCollector()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*time.Duration(timeout))

@@ -225,3 +225,126 @@ func ExpandVirtualMachineCloneSpec(d *schema.ResourceData, c *govmomi.Client) (t
 	log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Clone spec prep complete")
 	return spec, vm, nil
 }
+
+// ExpandVirtualMachineCloneSpec creates a clone spec for an existing virtual machine.
+//
+// The clone spec built by this function for the clone contains the target
+// datastore, the source snapshot in the event of linked clones, and a relocate
+// spec that contains the new locations and configuration details of the new
+// virtual disks.
+func ExpandCohesityVirtualMachineCloneSpec(d *schema.ResourceData, c *govmomi.Client) (types.VirtualMachineCloneSpec, *object.VirtualMachine, error) {
+	var spec types.VirtualMachineCloneSpec
+	log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Preparing clone spec for VM")
+
+	// Populate the datastore only if we have a datastore ID. The ID may not be
+	// specified in the event a datastore cluster is specified instead.
+	if dsID, ok := d.GetOk("datastore_id"); ok {
+		ds, err := datastore.FromID(c, dsID.(string))
+		if err != nil {
+			return spec, nil, fmt.Errorf("error locating datastore for VM: %s", err)
+		}
+		spec.Location.Datastore = types.NewReference(ds.Reference())
+	}
+
+	morefId := d.Get("clone.0.moref_id").(string)
+	log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Cloning from UUID: %s", morefId)
+	vm, err := virtualmachine.FromMOID(c, morefId)
+	if err != nil {
+		return spec, nil, fmt.Errorf("cannot locate virtual machine or template with UUID %q: %s", morefId, err)
+	}
+	vprops, err := virtualmachine.Properties(vm)
+	if err != nil {
+		return spec, nil, fmt.Errorf("error fetching virtual machine or template properties: %s", err)
+	}
+	// If we are creating a linked clone, grab the current snapshot of the
+	// source, and populate the appropriate field. This should have already been
+	// validated, but just in case, validate it again here.
+	/*
+		if d.Get("clone.0.linked_clone").(bool) {
+			log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Clone type is a linked clone")
+			log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Fetching snapshot for VM/template UUID %s", morefId)
+			if err := validateCloneSnapshots(vprops); err != nil {
+				return spec, nil, err
+			}
+			spec.Snapshot = vprops.Snapshot.CurrentSnapshot
+			spec.Location.DiskMoveType = string(types.VirtualMachineRelocateDiskMoveOptionsCreateNewChildDiskBacking)
+			log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Snapshot for clone: %s", vprops.Snapshot.CurrentSnapshot.Value)
+		}
+	*/
+
+	// Set the target host system and resource pool.
+	poolID := d.Get("resource_pool_id").(string)
+	pool, err := resourcepool.FromID(c, poolID)
+	if err != nil {
+		return spec, nil, fmt.Errorf("could not find resource pool ID %q: %s", poolID, err)
+	}
+
+	// Fetch the host from vm runtime properties and check if its part of the resource pool or not
+	var hs *object.HostSystem
+	if v, ok := d.GetOk("host_system_id"); ok {
+		hsID := v.(string)
+		var err error
+		if hs, err = hostsystem.FromID(c, hsID); err != nil {
+			return spec, nil, fmt.Errorf("error locating host system at ID %q: %s", hsID, err)
+		}
+	} else {
+		if vprops.Runtime.Host == nil {
+			return spec, nil, fmt.Errorf("Unable to determine the host_system_id from source vm.")
+		}
+		log.Printf("host_system_id not set, using original vms host")
+		moid := vprops.Runtime.Host.Value
+		var err error
+		if hs, err = hostsystem.FromID(c, moid); err != nil {
+			return spec, nil, fmt.Errorf("error locating host system at ID %q: %s", moid, err)
+		}
+	}
+	// Validate that the host is part of the resource pool before proceeding
+	if err := resourcepool.ValidateHost(c, pool, hs); err != nil {
+		return spec, nil, err
+	}
+	poolRef := pool.Reference()
+	spec.Location.Pool = &poolRef
+	if hs != nil {
+		hsRef := hs.Reference()
+		spec.Location.Host = &hsRef
+	}
+
+	// The logic in virtualdevice.DiskCloneRelocateOperation needs the
+	// "scsi_controller_count" and "disk" information of the source VM, we compute
+	// these using the clone.0.moref_id(source vm's moref_id) and set them.
+	log.Printf("[DEBUG] Determining number of SCSI controllers for VM %q", vprops.Name)
+	scsiBus := make([]bool, 4)
+	for _, device := range vprops.Config.Hardware.Device {
+		sc, ok := device.(types.BaseVirtualSCSIController)
+		if !ok {
+			continue
+		}
+		scsiBus[sc.GetVirtualSCSIController().BusNumber] = true
+	}
+	var ctlrCnt int
+	for _, v := range scsiBus {
+		if !v {
+			break
+		}
+		ctlrCnt++
+	}
+	if ctlrCnt < 1 {
+		return spec, nil, fmt.Errorf("VM %q has no SCSI controllers", vprops.Name)
+	}
+	d.Set("scsi_controller_count", ctlrCnt)
+
+	devices := object.VirtualDeviceList(vprops.Config.Hardware.Device)
+	if err := virtualdevice.DiskRefreshOperation(d, c, devices); err != nil {
+		return spec, nil, err
+	}
+
+	// Grab the relocate spec for the disks.
+	l := object.VirtualDeviceList(vprops.Config.Hardware.Device)
+	relocators, err := virtualdevice.DiskCloneRelocateOperation(d, c, l)
+	if err != nil {
+		return spec, nil, err
+	}
+	spec.Location.Disk = relocators
+	log.Printf("[DEBUG] ExpandVirtualMachineCloneSpec: Clone spec prep complete")
+	return spec, vm, nil
+}
